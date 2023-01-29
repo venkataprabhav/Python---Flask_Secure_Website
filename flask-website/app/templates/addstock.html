@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+
+{% block content %}
+
+<html>
+   <body>
+      <form action = "{{ url_for('addstock') }}" method = "POST">
+        </br>
+         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+         <h3>Add Stock</h3>
+
+
+        <div class="input-field">
+	        <input id="name" name="name" type="text">
+	        <label for="name">Book Name<label>
+        </div>
+
+        <div class="input-field">
+	        <input id="description" name="description" type="text">
+	        <label for="description">Book Description<label>
+        </div>
+
+        <div class="input-field">
+	        <input id="price" name="price" type="number">
+	        <label for="price">Price<label>
+        </div>
+
+        <div>
+            <input type="file" id="image" name="image" accept="image/png, image/jpeg">
+        </div>
+
+            </br></br>
+         <button class="waves-effect waves-light btn" href="{{ url_for('addstock') }}">Submit</button>
+      </form>
+   </body>
+</html>
+{% endblock %}

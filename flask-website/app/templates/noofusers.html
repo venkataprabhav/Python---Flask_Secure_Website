@@ -1,0 +1,41 @@
+{% extends "adminbase.html" %}
+
+
+{% block content %}
+
+<h1>Users</h1>
+
+<div>
+<table border = 1>
+
+    <tr>
+        {% for header in headings %}
+        <th>{{ header }}</th>
+        {% endfor %}
+    </tr>
+        {% for name in head %}
+        <tr>
+            <td>{{ name["email"] }}</td>
+            <td>{{ name["id"] }}</td>
+        </tr>
+        {% endfor %}
+
+
+</table>
+</div>
+
+{% endblock content %}
+
+{% block scripts %}
+<script>
+
+  var options =  {
+      indicators: true
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+      var elems = document.querySelectorAll('.carousel');
+      var instances = M.Carousel.init(elems, options);
+  });
+</script>
+{% endblock %}

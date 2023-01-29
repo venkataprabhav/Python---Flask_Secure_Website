@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+
+{% block content %}
+<div class="row">
+  <h1> User Settings </h1>
+
+  <h2>My Info</h2>
+
+  <ul>
+    <li>ID {{user.id}}</li>
+    <li>Email {{user.email}}</li>
+  </ul>
+
+  
+<div class="row">
+  <h3>Purchase History</h3>
+  <table  class="striped">
+    <thead>
+      <tr>
+	<th>Item</th>
+	<th>Date</th>
+	<th>Review</th>
+      </tr>
+    </thead>
+  {% for item in purchaces %}
+    <tr>
+    <td>{{ item.name }} </td>
+    <td>{{ item.date }} </td>
+    <td><a href="{{url_for('reviewItem', userId=user.id, itemId=item.productID)}}">Review Item</a></td>
+  </tr>
+  {% endfor %}
+  </table>
+</div>
+
+
+
+<div class="row">
+  <h2>Update Password</h2>
+  <form method="POST" action="{{url_for('updateUser', userId=user.id ) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+    <div class="input-field">
+      <input id="current" name="current" type="password"/>
+      <label for="current">Current Password<label>
+    </div>
+    <div class="input-field">
+      <input id="password" name="password" type="password"/>
+    <label for="password">Password<label>
+    </div>
+        <p>The Password must be:</p>
+        <p>• At least 8 characters long</p>
+        <p>• Must contain at least one lowercase letter </p>
+        <p>• Must contain at least one uppercase letter </p>
+        <p>• Must contain at least one number </p>
+        <p>• Must contain at least one special character </p>
+    <button class="waves-effect waves-light btn">Update</button>	
+  </form>
+</div>
+
+
+{% endblock content %}
