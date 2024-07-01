@@ -1,39 +1,22 @@
-# CW Template
+# Secure Website
 
-Build using Flask, see https://flask.palletsprojects.com/en/2.2.x/
+Built using Flask, see https://flask.palletsprojects.com/en/2.2.x/
 
-## Build Instruction
-
-  1. Create a virtual env
-     ```python -m venv env```
-
-	 Remember to activate the Env when you go to use it
-	 
-	 ```
-	 source env/Scripts/activate
-	 ```
+## Instructions
      
-  2. Install Requirements
+  1. Install Requirements
   
      ```
 	 pip install -r REQUIREMENTS.txt
 	 ```
 	
-  3. Run
+  2. Run
   
      ```
 	 flask --app app/ --debug run
 	 ```
 
 The site should now be visible on 127.0.0.1:5000
-
-## Inital DB
-
-Database Schema can be found in ```schema.db```
-
-You can initialise a testing db by visiting ```127.0.0.1:5000/initdb```
-
-
 
 	 
 
