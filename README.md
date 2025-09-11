@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project is a full-featured Book Shop website built using Flask for the backend, JavaScript for dynamic frontend interactions, and HTML/CSS for the user interface. The website offers a range of features from browsing and purchasing books to managing products and users for admins.
+This project is a full-featured Book Shop website built using Python (Flask) for the backend, JavaScript for dynamic frontend interactions, and HTML/CSS for the user interface. The website offers a range of features from browsing and purchasing books to managing products and users for admins.
 
 Built using Flask, see https://flask.palletsprojects.com/en/2.2.x/
 
