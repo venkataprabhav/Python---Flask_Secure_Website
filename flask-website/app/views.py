@@ -196,6 +196,7 @@ def create():
 
             # calculating the length
             badlength = len(password) < 8
+            badlength2 = len(password) > 20
             # searching for digits
             badnumber = re.search(r"\d", password) is None
             # searching for uppercase
@@ -312,7 +313,7 @@ def updateUser(userId):
     thisUser = query_db(theQry, id, one=True)
     if not thisUser:
         flask.flash("No Such User")
-        return flask.redirect(flask_url_for("index"))
+        return flask.redirect(flask.url_for("index"))
 
     #otherwise we want to do the checks
     if flask.session["user"] == thisUser["id"]:
@@ -401,7 +402,7 @@ def reviewItem(userId, itemId):
     thisUser = query_db(theQry, id, one=True)
     if not thisUser:
         flask.flash("No Such User")
-        return flask.redirect(flask_url_for("index"))
+        return flask.redirect(flask.url_for("index"))
 
     # otherwise we want to do the checks
     if flask.session["user"] == thisUser["id"]:
