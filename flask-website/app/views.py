@@ -1,5 +1,3 @@
-
-
 from .meta import *
 
 import os
@@ -13,6 +11,55 @@ from markupsafe import escape
 import email.message
 import csrf
 from flask_wtf.csrf import CSRFProtect
+from functools import wraps
+
+
+def login_required(f):
+    """Decorator to require login for protected routes"""
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in flask.session:
+            flask.flash("You need to be logged in to access this page")
+            return flask.redirect(flask.url_for("login"))
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def admin_required(f):
+    """Decorator to require admin access"""
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in flask.session:
+            flask.flash("You need to be logged in to access this page")
+            return flask.redirect(flask.url_for("login"))
+
+        # Check if user is admin by checking b055 table
+        user_id = flask.session.get('user')
+        admin_query = query_db("SELECT * FROM b055 WHERE id = ?", [user_id], one=True)
+        if not admin_query:
+            flask.flash("Access denied - Admin privileges required")
+            return flask.redirect(flask.url_for("index"))
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def validate_user_access(user_id):
+    """Validate that current session user can access the requested user_id"""
+    session_user_id = flask.session.get('user')
+    if not session_user_id:
+        return False
+
+    try:
+        if int(session_user_id) != int(user_id):
+            return False
+    except (ValueError, TypeError):
+        return False
+
+    return True
 
 
 @app.route("/")
@@ -20,371 +67,313 @@ def index():
     """
     Main Page.
     """
-
-    #Get data from the DB using meta function
-    
+    # Get data from the DB using meta function
     rows = query_db("SELECT * FROM product")
     app.logger.info(rows)
-    
-    return flask.render_template("index.html",
-                                 bookList = rows)
+
+    return flask.render_template("index.html", bookList=rows)
 
 
 @app.route("/adminindex")
+@admin_required
 def adminindex():
     """
-    Main Page.
+    Admin Main Page.
     """
-
     # Get data from the DB using meta function
-
     rows = query_db("SELECT * FROM product")
     app.logger.info(rows)
 
-    return flask.render_template("adminindex.html",
-                                 bookList = rows)
+    return flask.render_template("adminindex.html", bookList=rows)
 
 
-@app.route("/products", methods=["GET","POST"])
+@app.route("/products", methods=["GET", "POST"])
 def products():
     """
     Single Page (ish) Application for Products
     """
     theItem = flask.request.args.get("item")
     if theItem:
-        
-        #We Do A Query for It
-        itemQry = query_db(f"SELECT * FROM product WHERE id = ?",[theItem], one=True)
+        # Validate item ID is numeric
+        try:
+            item_id = int(theItem)
+        except (ValueError, TypeError):
+            flask.flash("Invalid item ID")
+            return flask.redirect(flask.url_for("products"))
 
-        #And Associated Reviews
-        #reviewQry = query_db("SELECT * FROM review WHERE productID = ?", [theItem])
-        theSQL = f"""
-        SELECT * 
+        # We Do A Query for It using parameterized query
+        itemQry = query_db("SELECT * FROM product WHERE id = ?", [item_id], one=True)
+
+        if not itemQry:
+            flask.flash("Product not found")
+            return flask.redirect(flask.url_for("products"))
+
+        # And Associated Reviews using parameterized query
+        theSQL = """
+        SELECT review.*, user.email 
         FROM review
         INNER JOIN user ON review.userID = user.id
-        WHERE review.productID = {itemQry['id']};
+        WHERE review.productID = ?
         """
-        reviewQry = query_db(theSQL)
-        
-        #If there is form interaction and they put somehing in the basket
+        reviewQry = query_db(theSQL, [itemQry['id']])
+
+        # If there is form interaction and they put something in the basket
         if flask.request.method == "POST":
+            if 'user' not in flask.session:
+                flask.flash("You need to be logged in to add items to cart")
+                return flask.redirect(flask.url_for("login"))
 
             quantity = markupsafe.escape(flask.request.form.get("quantity"))
             try:
                 quantity = int(quantity)
+                if quantity <= 0:
+                    raise ValueError("Quantity must be positive")
             except ValueError:
-                flask.flash("Error Buying Item")
+                flask.flash("Error: Invalid quantity")
                 return flask.render_template("product.html",
-                                             item = itemQry,
+                                             item=itemQry,
                                              reviews=reviewQry)
-            
-            app.logger.warning("Buy Clicked %s items", quantity)
-            
-            #And we add something to the Session for the user to keep track
-            basket = flask.session.get("basket", {})
 
-            basket[theItem] = quantity
+            app.logger.warning("Buy Clicked %s items", quantity)
+
+            # And we add something to the Session for the user to keep track
+            basket = flask.session.get("basket", {})
+            basket[str(item_id)] = quantity
             flask.session["basket"] = basket
             flask.flash("Item Added to Cart")
 
-            
         return flask.render_template("product.html",
-                                     item = itemQry,
+                                     item=itemQry,
                                      reviews=reviewQry)
     else:
-        
-        books = query_db("SELECT * FROM product")        
-        return flask.render_template("products.html",
-                                     books = books)
+        books = query_db("SELECT * FROM product")
+        return flask.render_template("products.html", books=books)
 
 
 @app.route("/adminproducts", methods=["GET", "POST"])
+@admin_required
 def adminproducts():
     """
-    Single Page (ish) Application for Products
+    Admin Products Page
     """
-    theItem = flask.request.args.get("item")
-
     books = query_db("SELECT * FROM product")
-    return flask.render_template("adminproducts.html",
-                                 books=books)
+    return flask.render_template("adminproducts.html", books=books)
+
 
 # ------------------
 # USER Level Stuff
 # ---------------------
-    
+
 @app.route("/user/login", methods=["GET", "POST"])
 def login():
     """
     Login Page
     """
-
     if flask.request.method == "POST":
         # Get data
         user = markupsafe.escape(flask.request.form.get("email"))
         password = markupsafe.escape(flask.request.form.get("password"))
 
-        vls = (user,)
-        app.logger.info("Attempt to login as %s:%s", vls)
-        theQry = "Select * FROM user WHERE email = ?"
-        userQry = query_db(theQry, vls, one=True)
+        if not user or not password:
+            flask.flash("Email and password are required")
+            return flask.render_template("login.html")
 
+        app.logger.info("Attempt to login as %s", user)
+
+        # First check regular users
+        theQry = "SELECT * FROM user WHERE email = ?"
+        userQry = query_db(theQry, [user], one=True)
 
         if userQry:
-            app.logger.info("User is Ok")
-
+            app.logger.info("User found in user table")
+            # Properly verify password using bcrypt
             if bcrypt.checkpw(password.encode('utf-8'), userQry["password"].encode('utf-8')):
                 app.logger.info("Login as %s Success", userQry["email"])
                 flask.session["user"] = userQry["id"]
+                flask.session["is_admin"] = False
                 flask.flash("Login Successful")
-
-
-                return (flask.redirect(flask.url_for("index")))
-
+                return flask.redirect(flask.url_for("index"))
+            else:
+                flask.flash("Details Incorrect")
         else:
-            vls = (user,)
-            app.logger.info("Attempt to login as %s:%s", vls)
-            theQry = "Select * FROM b055 WHERE nimda = ?"
-            userQry = query_db(theQry, vls, one=True)
+            # Check admin users
+            app.logger.info("Checking admin table")
+            theQry = "SELECT * FROM b055 WHERE nimda = ?"
+            adminQry = query_db(theQry, [user], one=True)
 
-            if userQry:
-                app.logger.info("User is Ok")
-                if userQry["ssapnimda"] == password:
-                    app.logger.info("Login as %s Success", userQry["nimda"])
-                    flask.session["user"] = userQry["id"]
-                    flask.flash("Login Successful")
-                    return (flask.redirect(flask.url_for("adminindex")))
-
+            if adminQry:
+                app.logger.info("Admin user found")
+                # Check admin password (assuming plain text for admin - should be hashed in production)
+                if adminQry["ssapnimda"] == password:
+                    app.logger.info("Admin login as %s Success", adminQry["nimda"])
+                    flask.session["user"] = adminQry["id"]
+                    flask.session["is_admin"] = True
+                    flask.flash("Admin Login Successful")
+                    return flask.redirect(flask.url_for("adminindex"))
                 else:
                     flask.flash("Details Incorrect")
-
-
-        if userQry is None:
-            flask.flash("Details Incorrect")
-
-
-
+            else:
+                flask.flash("Details Incorrect")
 
     return flask.render_template("login.html")
 
 
-
-@app.route("/user/create", methods=["GET","POST"])
+@app.route("/user/create", methods=["GET", "POST"])
 def create():
     """ Create a new account,
     we will redirect to a homepage here
     """
-
     if flask.request.method == "GET":
         return flask.render_template("create_account.html")
 
-    #Get the form data
+    # Get the form data
     email = markupsafe.escape(flask.request.form.get("email"))
     password = markupsafe.escape(flask.request.form.get("password"))
 
-
-    #Sanity check do we have a name, email and password
-    if not email or not password: 
+    # Sanity check do we have a name, email and password
+    if not email or not password:
         flask.flash("Not all info supplied")
-        return flask.render_template("create_account.html",
-                                     email = email,
-                                     password = password)
+        return flask.render_template("create_account.html", email=email)
 
-    elif email and password:
-        def validpass(password):
-            global goodpass
+    def validpass(password):
+        # calculating the length
+        badlength = len(password) < 8
+        badlength2 = len(password) > 20
 
-            # calculating the length
-            badlength = len(password) < 8
-            badlength2 = len(password) > 20
-            # searching for digits
-            badnumber = re.search(r"\d", password) is None
-            # searching for uppercase
-            badupper = re.search(r"[A-Z]", password) is None
-            # searching for lowercase
-            badlower = re.search(r"[a-z]", password) is None
-            # searching for symbols
-            badspecchar = re.search(r"[ !#$%&'()*+,-./[\\\]^_`{|}~" + r'"]', password) is None
-            # overall result
-            goodpass = not (badlength or badnumber or badupper or badlower or badspecchar or badlength)
+        # searching for digits
+        badnumber = re.search(r"\d", password) is None
+        # searching for uppercase
+        badupper = re.search(r"[A-Z]", password) is None
+        # searching for lowercase
+        badlower = re.search(r"[a-z]", password) is None
+        # searching for symbols
+        badspecchar = re.search(r"[ !#$%&'()*+,-./[\\\]^_`{|}~" + r'"]', password) is None
+        # overall result
+        goodpass = not (badlength or badnumber or badupper or badlower or badspecchar or badlength2)
 
-            return {
-                'goodpass': goodpass,
-                'badlength': badlength,
-                'badlength2': badlength2,
-                'badnumber': badnumber,
-                'badupper': badupper,
-                'badlower': badlower,
-                'badspecchar': badspecchar,
-            }
-        validpass(password)
-        if goodpass == True:
+        return goodpass
 
-            #Otherwise we can add the user
-            vls = (email, )
-            theQry = "Select * FROM user WHERE email = ?"
-            userQry =  query_db(theQry,vls, one=True)
+    if not validpass(password):
+        flask.flash("Password requirements not met!")
+        return flask.render_template("create_account.html", email=email)
 
-            if userQry:
-                flask.flash("A User with that Email Exists")
-                return flask.render_template("create_account.html",
-                                             email = email)
+    # Check if user already exists
+    theQry = "SELECT * FROM user WHERE email = ?"
+    userQry = query_db(theQry, [email], one=True)
 
-            else:
-                #Crate the user
-                app.logger.info("Create New User")
-                password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-                vls = (email, password)
-                password = password.decode('utf-8')
-                vls = (email, password)
-                theQry = f"INSERT INTO user (id, email, password) VALUES (NULL, ?, ?)"
-                userQry = write_db(theQry, vls)
+    if userQry:
+        flask.flash("A User with that Email Exists")
+        return flask.render_template("create_account.html", email=email)
 
-                flask.flash("Account Created, you can now Login")
-                return flask.redirect(flask.url_for("login"))
+    # Create the user
+    app.logger.info("Create New User")
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+    password_str = hashed_password.decode('utf-8')
 
-        else:
-            flask.flash("Password requirements not met!")
-            return flask.render_template("create_account.html",
-                                         email=email)
+    theQry = "INSERT INTO user (email, password) VALUES (?, ?)"
+    write_db(theQry, [email, password_str])
 
-#<li>Email {{user.email}}</li>
+    flask.flash("Account Created, you can now Login")
+    return flask.redirect(flask.url_for("login"))
 
-@app.route("/user/<userId>/settings")
+
+@app.route("/user/<int:userId>/settings")
+@login_required
 def settings(userId):
     """
     Update a users settings,
     Allow them to make reviews
     """
-    flask.session.get("user")
-    vls = (userId)
-    theQry = "Select * FROM User WHERE id = ?;"
-    vls = (userId)
-    thisUser =  query_db(theQry, vls, one=True)
+    if not validate_user_access(userId):
+        flask.flash("Access denied")
+        return flask.redirect(flask.url_for("index"))
+
+    theQry = "SELECT * FROM user WHERE id = ?"
+    thisUser = query_db(theQry, [userId], one=True)
 
     if not thisUser:
         flask.flash("No Such User")
         return flask.redirect(flask.url_for("index"))
 
-    #Purchases
-    if flask.session["user"] == thisUser["id"]:
-        theSQL = f"Select * FROM purchase WHERE userID = ?"
-        purchaces = query_db(theSQL, vls)
+    # Purchases
+    theSQL = """
+    SELECT productId, date, product.name
+    FROM purchase
+    INNER JOIN product ON purchase.productID = product.id
+    WHERE userID = ?
+    """
+    purchases = query_db(theSQL, [userId])
 
-        theSQL = """
-        SELECT productId, date, product.name
-        FROM purchase
-        INNER JOIN product ON purchase.productID = product.id
-        WHERE userID = ?;
-        """
-
-        purchaces = query_db(theSQL, vls)
-
-        return flask.render_template("usersettings.html",
-                                    user = thisUser,
-                                    purchaces = purchaces)
-
-    else:
-        flask.flash("No Such User")
-        return flask.redirect(flask.url_for("index"))
-
-
-
+    return flask.render_template("usersettings.html",
+                                 user=thisUser,
+                                 purchaces=purchases)
 
 
 @app.route("/logout")
 def logout():
     """
-    Login Page
+    Logout - clear session
     """
     flask.session.clear()
     return flask.redirect(flask.url_for("index"))
-    
 
 
-@app.route("/user/<userId>/update", methods=["GET","POST"])
+@app.route("/user/<int:userId>/update", methods=["GET", "POST"])
+@login_required
 def updateUser(userId):
     """
-    Process any chances from the user settings page
+    Process any changes from the user settings page
     """
-    flask.session.get("user")
-    id = (userId)
-    theQry = "Select * FROM user WHERE id = ?"
-    thisUser = query_db(theQry, id, one=True)
+    if not validate_user_access(userId):
+        flask.flash("Access denied")
+        return flask.redirect(flask.url_for("index"))
+
+    theQry = "SELECT * FROM user WHERE id = ?"
+    thisUser = query_db(theQry, [userId], one=True)
+
     if not thisUser:
         flask.flash("No Such User")
         return flask.redirect(flask.url_for("index"))
 
-    #otherwise we want to do the checks
-    if flask.session["user"] == thisUser["id"]:
-        if flask.request.method == "POST":
+    if flask.request.method == "POST":
+        current = markupsafe.escape(flask.request.form.get("current"))
+        new_password = markupsafe.escape(flask.request.form.get("password"))
 
-            current = markupsafe.escape(flask.request.form.get("current"))
-            password = markupsafe.escape(flask.request.form.get("password"))
+        if not current or not new_password:
+            flask.flash("Both current and new password are required")
+            return flask.redirect(flask.url_for("settings", userId=userId))
 
-            app.logger.info("Attempt password update for %s from %s to %s", userId, current, password)
-            app.logger.info("%s == %s", current, thisUser["password"])
-            if current:
+        app.logger.info("Attempt password update for %s", userId)
 
-                x = bcrypt.hashpw(current.encode('utf-8'), thisUser["password"].encode('utf-8'))
+        # Properly verify current password
+        if bcrypt.checkpw(current.encode('utf-8'), thisUser["password"].encode('utf-8')):
 
-                if thisUser["password"] == x.decode('utf-8'):
-                    def validpass(password):
-                        global goodpass
+            def validpass(password):
+                badlength = len(password) < 8
+                badlength2 = len(password) > 20
+                badnumber = re.search(r"\d", password) is None
+                badupper = re.search(r"[A-Z]", password) is None
+                badlower = re.search(r"[a-z]", password) is None
+                badspecchar = re.search(r"[ !#$%&'()*+,-./[\\\]^_`{|}~" + r'"]', password) is None
+                return not (badlength or badnumber or badupper or badlower or badspecchar or badlength2)
 
-                        # calculating the length
-                        badlength = len(password) < 8
-                        badlength2 = len(password) > 20
-                        # searching for digits
-                        badnumber = re.search(r"\d", password) is None
-                        # searching for uppercase
-                        badupper = re.search(r"[A-Z]", password) is None
-                        # searching for lowercase
-                        badlower = re.search(r"[a-z]", password) is None
-                        # searching for symbols
-                        badspecchar = re.search(r"[ !#$%&'()*+,-./[\\\]^_`{|}~" + r'"]', password) is None
-                        # overall result
-                        goodpass = not (badlength or badnumber or badupper or badlower or badspecchar or badlength)
+            if validpass(new_password):
+                app.logger.info("Password OK, update")
+                # Update the Password
+                hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
+                password_str = hashed_password.decode('utf-8')
 
-                        return {
-                            'goodpass': goodpass,
-                            'badlength': badlength,
-                            'badlength2': badlength2,
-                            'badnumber': badnumber,
-                            'badupper': badupper,
-                            'badlower': badlower,
-                            'badspecchar': badspecchar,
-                        }
-                    validpass(password)
-                    if goodpass == True:
-
-                        app.logger.info("Password OK, update")
-                        #Update the Password
-                        password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-                        password = password.decode('utf-8')
-
-                        vls = (password, id)
-                        theSQL = f"UPDATE user SET password = ? WHERE id = ?"
-                        app.logger.info("SQL %s", theSQL)
-                        write_db(theSQL, vls)
-                        flask.flash("Password Updated")
-                    else:
-                        flask.flash("Password requirements not met!")
-                        return flask.render_template("settings.html",
-                                                 email=email)
-
-
-                else:
-                    app.logger.info("Mismatch")
-                    flask.flash("Current Password is incorrect")
-                return flask.redirect(flask.url_for("settings",
-                                                    userId = thisUser['id']))
-
-
-
-            flask.flash("Update Error")
+                theSQL = "UPDATE user SET password = ? WHERE id = ?"
+                write_db(theSQL, [password_str, userId])
+                flask.flash("Password Updated")
+            else:
+                flask.flash("Password requirements not met!")
+        else:
+            app.logger.info("Current password mismatch")
+            flask.flash("Current Password is incorrect")
 
     return flask.redirect(flask.url_for("settings", userId=userId))
+
 
 # -------------------------------------
 #
@@ -392,95 +381,78 @@ def updateUser(userId):
 #
 # ------------------------------------------
 
-@app.route("/review/<userId>/<itemId>", methods=["GET", "POST"])
+@app.route("/review/<int:userId>/<int:itemId>", methods=["GET", "POST"])
+@login_required
 def reviewItem(userId, itemId):
     """Add a Review"""
-
-    flask.session.get("user")
-    id = (userId)
-    theQry = "Select * FROM user WHERE id = ?"
-    thisUser = query_db(theQry, id, one=True)
-    if not thisUser:
-        flask.flash("No Such User")
+    if not validate_user_access(userId):
+        flask.flash("Access denied")
         return flask.redirect(flask.url_for("index"))
 
-    # otherwise we want to do the checks
-    if flask.session["user"] == thisUser["id"]:
+    # Handle input
+    if flask.request.method == "POST":
+        reviewStars = markupsafe.escape(flask.request.form.get("rating"))
+        reviewComment = markupsafe.escape(flask.request.form.get("review"))
+        reviewId = markupsafe.escape(flask.request.form.get("reviewId"))
 
-        #Handle input
-        if flask.request.method == "POST":
-            reviewStars = markupsafe.escape(flask.request.form.get("rating"))
-            reviewComment = markupsafe.escape(flask.request.form.get("review"))
+        # Validate rating
+        try:
+            rating = int(reviewStars)
+            if rating < 1 or rating > 5:
+                raise ValueError("Rating must be between 1 and 5")
+        except (ValueError, TypeError):
+            flask.flash("Invalid rating")
+            return flask.redirect(flask.url_for("reviewItem", userId=userId, itemId=itemId))
 
-            #Clean up review whitespace
-            reviewComment = reviewComment.strip()
-            reviewId = markupsafe.escape(flask.request.form.get("reviewId"))
+        # Clean up review whitespace
+        reviewComment = reviewComment.strip()
 
-            app.logger.info("Review Made %s", reviewId)
-            app.logger.info("Rating %s  Text %s", reviewStars, reviewComment)
-
-            if reviewId:
-                #Update an existing oe
-                app.logger.info("Update Existing")
-
-                theSQL = f"""
-                UPDATE review
-                SET stars = {reviewStars},
-                    review = '{reviewComment}'
-                WHERE
-                    id = {reviewId}"""
-
-                app.logger.debug("%s", theSQL)
-                write_db(theSQL)
-
+        if reviewId:
+            # Update an existing review
+            app.logger.info("Update Existing Review")
+            try:
+                review_id_int = int(reviewId)
+                theSQL = "UPDATE review SET stars = ?, review = ? WHERE id = ? AND userID = ?"
+                write_db(theSQL, [rating, reviewComment, review_id_int, userId])
                 flask.flash("Review Updated")
+            except (ValueError, TypeError):
+                flask.flash("Invalid review ID")
+        else:
+            app.logger.info("New Review")
+            theSQL = "INSERT INTO review (userId, productId, stars, review) VALUES (?, ?, ?, ?)"
+            write_db(theSQL, [userId, itemId, rating, reviewComment])
+            flask.flash("Review Made")
 
-            else:
-                app.logger.info("New Review")
+    # Get the product and existing review
+    theQry = "SELECT * FROM product WHERE id = ?"
+    item = query_db(theQry, [itemId], one=True)
 
-                theSQL = f"""
-                INSERT INTO review (userId, productId, stars, review)
-                VALUES ({userId}, {itemId}, {reviewStars}, '{reviewComment}');
-                """
+    if not item:
+        flask.flash("Product not found")
+        return flask.redirect(flask.url_for("products"))
 
-                app.logger.info("%s", theSQL)
-                write_db(theSQL)
+    theQry = "SELECT * FROM review WHERE userID = ? AND productID = ?"
+    review = query_db(theQry, [userId, itemId], one=True)
+    app.logger.debug("Review Exists %s", review)
 
-                flask.flash("Review Made")
+    return flask.render_template("reviewItem.html",
+                                 item=item,
+                                 review=review,
+                                 userId=userId, itemId=itemId)
 
-        #Otherwise get the review
-        theQry = f"SELECT * FROM product WHERE id = {itemId};"
-        item = query_db(theQry, one=True)
-
-        theQry = f"SELECT * FROM review WHERE userID = {userId} AND productID = {itemId};"
-        review = query_db(theQry, one=True)
-        app.logger.debug("Review Exists %s", review)
-
-        return flask.render_template("reviewItem.html",
-                                     item = item,
-                                     review = review,
-                                     userId=userId, itemId=itemId)
 
 # ---------------------------------------
 #
-# BASKET AND PAYMEN
+# BASKET AND PAYMENT
 #
 # ------------------------------------------
 
-
-
-@app.route("/basket", methods=["GET","POST"])
+@app.route("/basket", methods=["GET", "POST"])
+@login_required
 def basket():
-
-    #Check for user
-    if not flask.session["user"]:
-        flask.flash("You need to be logged in")
-        return flask.redirect(flask.url_for("index"))
-
-
+    """Display user's shopping basket"""
     theBasket = []
-    #Otherwise we need to work out the Basket
-    #Get it from the session
+    # Get basket from session
     sessionBasket = flask.session.get("basket", None)
     if not sessionBasket:
         flask.flash("No items in basket")
@@ -488,88 +460,113 @@ def basket():
 
     totalPrice = 0
     for key in sessionBasket:
+        try:
+            item_id = int(key)
+        except (ValueError, TypeError):
+            continue
 
-        vls = (key)
-        theQry = f"SELECT * FROM product WHERE id = ?"
-        theItem =  query_db(theQry, vls, one=True)
-        quantity = int(sessionBasket[key])
-        thePrice = theItem["price"] * quantity
-        totalPrice += thePrice
-        theBasket.append([theItem, quantity, thePrice])
-    
-        
+        theQry = "SELECT * FROM product WHERE id = ?"
+        theItem = query_db(theQry, [item_id], one=True)
+
+        if theItem:
+            quantity = int(sessionBasket[key])
+            thePrice = theItem["price"] * quantity
+            totalPrice += thePrice
+            theBasket.append([theItem, quantity, thePrice])
+
     return flask.render_template("basket.html",
-                                 basket = theBasket,
+                                 basket=theBasket,
                                  total=totalPrice)
 
+
 @app.route("/basket/payment", methods=["GET", "POST"])
+@login_required
 def pay():
     """
-    Fake paymeent.
-
+    Fake payment.
     YOU DO NOT NEED TO IMPLEMENT PAYMENT
     """
-
-    if not flask.session["user"]:
-        flask.flash("You need to be logged in")
-        return flask.redirect(flask.url_for("index"))
-
     # Get the total cost
     cost = markupsafe.escape(flask.request.form.get("total"))
 
-    # Fetch USer ID from Sssion
-    theQry = "Select * FROM User WHERE id = {0}".format(flask.session["user"])
-    theUser = query_db(theQry, one=True)
+    # Fetch User ID from Session
+    user_id = flask.session["user"]
+    theQry = "SELECT * FROM user WHERE id = ?"
+    theUser = query_db(theQry, [user_id], one=True)
+
+    if not theUser:
+        flask.flash("User not found")
+        return flask.redirect(flask.url_for("index"))
 
     # Add products to the user
     sessionBasket = flask.session.get("basket", None)
+    if not sessionBasket:
+        flask.flash("No items in basket")
+        return flask.redirect(flask.url_for("index"))
 
     theDate = datetime.datetime.utcnow()
     for key in sessionBasket:
-        # As we should have a trustworthy key in the basket.
-        theQry = "INSERT INTO PURCHASE (userID, productID, date) VALUES ({0},{1},'{2}')".format(theUser['id'],
-                                                                                                key,
-                                                                                                theDate)
+        try:
+            product_id = int(key)
+        except (ValueError, TypeError):
+            continue
 
-        app.logger.debug(theQry)
-        write_db(theQry)
+        theQry = "INSERT INTO purchase (userID, productID, date) VALUES (?, ?, ?)"
+        write_db(theQry, [theUser['id'], product_id, theDate])
 
     # Clear the Session
     flask.session.pop("basket", None)
 
-    return flask.render_template("pay.html",
-                                 total=cost)
+    return flask.render_template("pay.html", total=cost)
 
 
 @app.route("/noofusers")
+@admin_required
 def noofusers():
-
+    """Display number of users - Admin only"""
     headings = ("email", "id")
-    theQry = ("SELECT email,id FROM user")
+    theQry = "SELECT email, id FROM user"
     head = query_db(theQry)
-
-    print(head)
-
 
     return flask.render_template("noofusers.html", headings=headings, head=head)
 
-@app.route("/addstock", methods=["GET","POST"])
-def addstock():
 
+@app.route("/addstock", methods=["GET", "POST"])
+@admin_required
+def addstock():
+    """Add new product to stock - Admin only"""
     if flask.request.method == "GET":
         return flask.render_template("addstock.html")
-
 
     name = markupsafe.escape(flask.request.form.get("name"))
     description = markupsafe.escape(flask.request.form.get("description"))
     price = markupsafe.escape(flask.request.form.get("price"))
     image = markupsafe.escape(flask.request.form.get("image"))
 
-    vls = (name, description, price, image)
+    if not name or not description or not price:
+        flask.flash("Name, description, and price are required")
+        return flask.render_template("addstock.html",
+                                     name=name,
+                                     description=description,
+                                     price=price,
+                                     image=image)
 
+    # Validate price
+    try:
+        price_float = float(price)
+        if price_float < 0:
+            raise ValueError("Price must be positive")
+    except (ValueError, TypeError):
+        flask.flash("Invalid price")
+        return flask.render_template("addstock.html",
+                                     name=name,
+                                     description=description,
+                                     price=price,
+                                     image=image)
 
-    theQry = "Select * FROM product WHERE (id, name, description, price, image) = (NULL, ?, ?, ?, ?)"
-    userQry = query_db(theQry, vls, one=True)
+    # Check if product already exists
+    theQry = "SELECT * FROM product WHERE name = ? AND description = ? AND price = ?"
+    userQry = query_db(theQry, [name, description, price], one=True)
 
     if userQry:
         flask.flash("That product already exists")
@@ -579,24 +576,17 @@ def addstock():
                                      price=price,
                                      image=image)
 
-    else:
+    # Create the product
+    theQry = "INSERT INTO product (name, description, price, image) VALUES (?, ?, ?, ?)"
+    write_db(theQry, [name, description, price, image])
 
-        theQry = f"INSERT INTO product (id, name, description, price, image) VALUES (NULL, ?, ?, ?, ?)"
-        userQry = write_db(theQry, vls,)
-
-        flask.flash("New product created!")
-        return flask.redirect(flask.url_for("adminindex"))
-
-
-
-    return flask.render_template("addstock.html")
-
+    flask.flash("New product created!")
+    return flask.redirect(flask.url_for("adminindex"))
 
 
 # ---------------------------
 # HELPER FUNCTIONS
 # ---------------------------
-
 
 @app.route('/uploads/<name>')
 def serve_image(name):
@@ -610,13 +600,12 @@ def serve_image(name):
 def database_helper():
     """
     Helper / Debug Function to create the initial database
-
-    You are free to ignore scurity implications of this
+    You are free to ignore security implications of this
     """
     init_db()
     return "Done"
 
+
 @app.route("/terms")
 def terms():
     return flask.render_template("terms.html")
-
